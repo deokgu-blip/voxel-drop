@@ -16,6 +16,9 @@
  .binfill{position:absolute;left:0;right:0;bottom:0;background:var(--c);opacity:.85;transition:height .25s;}
  .bincap{position:relative;z-index:2;font-weight:900;font-size:22px;color:#16304f;margin-bottom:6px;text-shadow:0 1px 0 #fff;}
  .bin.done{background:rgba(120,200,120,.5);}
+ .bin.bump{animation:binbump .2s ease;}
+ @keyframes binbump{50%{transform:translateY(-7px) scale(1.09);}}
+ .flyer{position:fixed;width:28px;height:28px;margin:-14px;border:3px solid #16304f;border-radius:7px;z-index:60;pointer-events:none;box-shadow:0 3px 7px rgba(0,0,0,.35);transition:transform .34s cubic-bezier(.45,-0.25,.65,1);}
  #hint{position:fixed;left:0;right:0;bottom:54px;text-align:center;color:#16304f;font-weight:700;font-size:13px;opacity:.8;pointer-events:none;text-shadow:0 1px 0 #fff;}
  #restart{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);pointer-events:auto;background:#ffce3a;border:3px solid #16304f;color:#16304f;font-weight:800;font-size:14px;padding:8px 22px;border-radius:16px;box-shadow:0 4px 0 #16304f;cursor:pointer;}
  #clear{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(8,16,30,.45);color:#fff;font-weight:900;font-size:34px;}
@@ -3734,11 +3737,8 @@ function loadStage(i){
   groundY=modelLift-halfH-0.5*cubeWorld; ground.position.y=groundY;
   const lookY=modelLift*0.62; camera.position.set(0,lookY+camDist*0.10,camDist); camera.lookAt(0,lookY,0);
   fallers=[]; rebuildFallMesh();
-  // bins: distinct colours by count desc
-  const cnt={}; for(const v of voxels) cnt[v.hex]=(cnt[v.hex]||0)+1;
-  colorQueue=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]);
-  bins=[]; for(let k=0;k<Math.min(NBINS,colorQueue.length);k++) bins.push({color:colorQueue.shift(),cap:BIN_CAP,fill:0});
-  computeConnectivity(); rebuildAttached(); buildBinUI(); updateHUD();
+  bins=[];
+  computeConnectivity(); rebuildAttached(); refreshBins(); buildBinUI(); updateHUD();
 }
 
 function computeConnectivity(){
@@ -3790,29 +3790,35 @@ function spawnFaller(v,burst){
     quat:new THREE.Quaternion(),av:new THREE.Vector3((Math.random()-0.5)*8,(Math.random()-0.5)*8,(Math.random()-0.5)*8),color:hexInt(v.hex)});
 }
 
-// ===== the move: tap a colour cluster -> collect into its bin =====
-function collectAt(hex, cluster){
-  const bin=findBin(hex);
-  if(!bin){ flashMsg('이 색을 담을 통이 없어요'); return; }
-  for(const v of cluster) removeVox(v);
-  // fill bin; pop on reaching cap (carry remainder)
-  let add=cluster.length;
-  bin.fill+=add;
-  while(bin.fill>=bin.cap){ bin.fill-=bin.cap; popBin(bin); }
-  // disconnected chunks fall
-  computeConnectivity();
-  for(const v of voxels){ if(v.alive&&!v.attached){ spawnFaller(v,true); removeVox(v); } }
-  flash();
-  rebuildAttached(); buildBinUI(); updateHUD();
-  if(attachedList.length===0) onClear();
+// bins always mirror the colours actually present (top NBINS by count), preserving fills
+function refreshBins(){
+  const cnt={}; for(const v of voxels) if(v.alive) cnt[v.hex]=(cnt[v.hex]||0)+1;
+  const present=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]).slice(0,NBINS);
+  const oldFill={}; for(const b of bins) if(b.color) oldFill[b.color]=b.fill;
+  bins=present.map(c=>({color:c,cap:BIN_CAP,fill:oldFill[c]||0}));
 }
-function popBin(bin){
-  binPopFx(bin);
-  // open next colour that still has voxels; else keep current if still present; else close
-  const remainingColors=new Set(voxels.filter(v=>v.alive).map(v=>v.hex));
-  const next=colorQueue.find(c=>remainingColors.has(c));
-  if(next){ colorQueue=colorQueue.filter(c=>c!==next); if(remainingColors.has(bin.color)&&bin.color!==next) colorQueue.push(bin.color); bin.color=next; bin.fill=0; }
-  else if(!remainingColors.has(bin.color)){ bin.color=null; }
+
+// ===== the move: tap ONE voxel -> it flies into its colour bin =====
+function collectOne(v, worldPoint){
+  const hex=v.hex; if(!findBin(hex)){ flashMsg('이 색 통이 없어요'); return; }
+  removeVox(v);
+  computeConnectivity();
+  for(const x of voxels){ if(x.alive&&!x.attached){ spawnFaller(x,true); removeVox(x); } }   // disconnected chunks fall
+  flash(); rebuildAttached(); refreshBins(); buildBinUI(); updateHUD();
+  const idx=Math.max(0, bins.findIndex(b=>b.color===hex));
+  flyToBin(worldPoint, idx, hex, ()=>{ const b=findBin(hex); if(b){ b.fill++; if(b.fill>=b.cap){b.fill-=b.cap; binPopFx(b);} } buildBinUI(); });
+  if(attachedList.length===0) setTimeout(onClear,400);
+}
+function flyToBin(worldPoint, binIdx, hex, onArrive){
+  const pr=worldPoint.clone().project(camera);
+  const sx=(pr.x*0.5+0.5)*window.innerWidth, sy=(-pr.y*0.5+0.5)*window.innerHeight;
+  const row=document.getElementById('bins'); const binEl=row.children[binIdx];
+  let bx=window.innerWidth/2, by=window.innerHeight-120;
+  if(binEl){ const r=binEl.getBoundingClientRect(); bx=r.left+r.width/2; by=r.top+r.height/2; }
+  const f=document.createElement('div'); f.className='flyer'; f.style.background='#'+hex.replace('0x','');
+  f.style.left=sx+'px'; f.style.top=sy+'px'; document.body.appendChild(f);
+  requestAnimationFrame(()=>{ f.style.transform='translate('+(bx-sx)+'px,'+(by-sy)+'px) scale(0.35)'; });
+  setTimeout(()=>{ f.remove(); if(binEl){ binEl.classList.add('bump'); setTimeout(()=>binEl.classList.remove('bump'),200);} if(onArrive)onArrive(); }, 340);
 }
 
 // ===== input =====
@@ -3825,7 +3831,7 @@ window.addEventListener('pointermove',ev=>{ if(!down)return; const dx=ev.clientX
   if(dragging){modelGroup.rotation.y+=dx*0.012;modelGroup.rotation.x=Math.max(-0.6,Math.min(0.6,modelGroup.rotation.x+dy*0.008));down.x=ev.clientX;down.y=ev.clientY;}});
 window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging; down=null; if(moved)return;
   const p=ndc(ev); ray.setFromCamera(p,camera); const hit=attachedMesh?ray.intersectObject(attachedMesh,false):[];
-  if(hit.length){const v=attachedList[hit[0].instanceId]; if(v) collectAt(v.hex, colorCluster(v));}});
+  if(hit.length){const v=attachedList[hit[0].instanceId]; if(v) collectOne(v, hit[0].point.clone());}});
 
 // ===== physics =====
 function step(dt){ if(!fallers.length){fallMesh.count=0;return;} dt=Math.min(dt,1/30);
@@ -3862,7 +3868,7 @@ function tick(now){const dt=(now-last)/1000;last=now;step(dt);
 
 // load cube.glb geometry (keep the existing voxel look), then boot
 function boot(){ resize(); loadStage(0); requestAnimationFrame(tick); window.__ready=true;
-  window.collectColor=hex=>{const v=voxels.find(x=>x.alive&&x.hex===hex&&x.attached);if(v)collectAt(hex,colorCluster(v));};
+  window.collectColor=hex=>{const v=voxels.find(x=>x.alive&&x.hex===hex&&x.attached);if(v)collectOne(v, modelGroup.localToWorld(new THREE.Vector3((v.gx-cx)*VS,(v.gy-cy)*VS,(v.gz-cz)*VS)));};
   window.loadStage=loadStage; }
 (function(){
   try{ const loader=new THREE.GLTFLoader();
