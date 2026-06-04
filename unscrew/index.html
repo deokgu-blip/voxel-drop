@@ -3705,7 +3705,7 @@ const KEY=(x,y,z)=>x+','+y+','+z;
 const NB=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 
 let stageIndex=0, voxels=[], byKey=new Map(), cx=0,cy=0,cz=0, modelScale=1, cubeWorld=1, groundY=0, camDist=30;
-let attachedMesh=null, attachedList=[], fallMesh=null, fallers=[], MAXVOX=0;
+let solidMesh=null, solidList=[], fallMesh=null, fallers=[], MAXVOX=0, occ=new Map(), springBack=false;
 let bins=[], NBINS=3, BIN_CAP=9;
 let binsGroup=null, binBoxes=[], flyers3d=[];
 let baseYGrid=0, baseMesh=null, lookY=0, camTheta=0.5, camPhi=0.28;   // base anchor + camera orbit
@@ -3741,30 +3741,54 @@ function loadStage(i){
   const bottomY=modelLift+(miny-cy)*VS-0.5*cubeWorld;   // world Y of model's lowest voxels
   groundY=bottomY-0.5; ground.position.y=bottomY-0.55;
   buildBase((xExt+2)*VS, (zExt+2)*VS, bottomY);
-  camTheta=0.5; camPhi=0.28; applyCam();
+  camTheta=0.5; camPhi=0.32; applyCam();
   fallers=[]; rebuildFallMesh();
-  bins=[];
-  computeConnectivity(); rebuildAttached(); refreshBins(); updateHUD();
+  bins=[]; springBack=false;
+  for(const v of voxels) v.loose=false;
+  reconcile(); rebuildSolidList(); updateSolid(); refreshBins(); updateHUD();
 }
 
-// anchored to the BASE: voxels on the bottom layer are rooted; flood up from them.
-function computeConnectivity(){
-  for(const v of voxels) v.attached=false;
+function rebuildOcc(){ occ=new Map(); for(const v of voxels) if(v.alive) occ.set(KEY(v.gx,v.gy,v.gz),v); }
+function at(x,y,z){ return occ.get(KEY(x,y,z)); }
+// adhesion to the BASE: flood from bottom-layer voxels through ADHERED (non-loose) voxels only.
+// orphans (alive, not loose, not reached) lose grip -> become LOOSE and fall onto the pile (rest).
+function reconcile(){
+  rebuildOcc();
+  for(const v of voxels) if(v.alive&&!v.loose) v.attached=false;
   const st=[];
-  for(const v of voxels){ if(v.alive && v.gy===baseYGrid){ v.attached=true; st.push(v); } }
-  while(st.length){const v=st.pop(); for(const [dx,dy,dz] of NB){const n=byKey.get(KEY(v.gx+dx,v.gy+dy,v.gz+dz)); if(n&&n.alive&&!n.attached){n.attached=true;st.push(n);}}}
+  for(const v of voxels){ if(v.alive&&!v.loose&&v.gy===baseYGrid){ v.attached=true; st.push(v); } }
+  while(st.length){const v=st.pop(); for(const [dx,dy,dz] of NB){const n=at(v.gx+dx,v.gy+dy,v.gz+dz); if(n&&!n.loose&&!n.attached){n.attached=true;st.push(n);}}}
+  const orphans=voxels.filter(v=>v.alive&&!v.loose&&!v.attached).sort((a,b)=>a.gy-b.gy);
+  for(const v of orphans) makeLoose(v);
 }
-function rebuildAttached(){
-  if(attachedMesh){modelGroup.remove(attachedMesh);attachedMesh.dispose();}
-  attachedList=voxels.filter(v=>v.alive&&v.attached);
-  const cap=Math.max(1,attachedList.length);
-  attachedMesh=new THREE.InstancedMesh(voxGeo,voxMat,cap); attachedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  _m.identity(); for(let i=0;i<cap;i++){attachedMesh.setMatrixAt(i,_m);attachedMesh.setColorAt(i,_col.set(0xffffff));}
-  for(let i=0;i<attachedList.length;i++){const v=attachedList[i];
-    _m.compose(_p.set((v.gx-cx)*VS,(v.gy-cy)*VS,(v.gz-cz)*VS),_q.set(0,0,0,1),_s.setScalar(VS));
-    attachedMesh.setMatrixAt(i,_m); attachedMesh.setColorAt(i,_col.setHex(hexInt(v.hex)));}
-  attachedMesh.count=attachedList.length; attachedMesh.instanceMatrix.needsUpdate=true;
-  if(attachedMesh.instanceColor)attachedMesh.instanceColor.needsUpdate=true; modelGroup.add(attachedMesh);
+function makeLoose(v){
+  occ.delete(KEY(v.gx,v.gy,v.gz));
+  let gy=v.gy;                                  // fall straight down its column until something is below (incl base floor)
+  while(gy-1>=baseYGrid && !occ.has(KEY(v.gx,gy-1,v.gz))) gy--;
+  v.dropFromGy=v.gy; v.gy=gy; v.loose=true; v.attached=false; v.dropT=0;
+  occ.set(KEY(v.gx,v.gy,v.gz),v);
+}
+function releaseLoose(){   // rotate dump: loose voxels lose their resting spot and tumble off
+  for(const v of voxels){ if(v.alive&&v.loose){ spawnFaller(v); v.alive=false; v.loose=false; } }
+}
+function ensureSolid(){
+  if(solidMesh) return;
+  solidMesh=new THREE.InstancedMesh(voxGeo,voxMat,Math.max(1,MAXVOX)); solidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  _m.identity(); for(let i=0;i<Math.max(1,MAXVOX);i++){solidMesh.setMatrixAt(i,_m);solidMesh.setColorAt(i,_col.set(0xffffff));}
+  modelGroup.add(solidMesh);
+}
+function rebuildSolidList(){ solidList=voxels.filter(v=>v.alive); }
+// render all in-play voxels (attached + loose); loose use an animated drop height. called each frame.
+function updateSolid(){
+  ensureSolid();
+  for(let i=0;i<solidList.length;i++){ const v=solidList[i];
+    let gy=v.gy;
+    if(v.loose && v.dropT<1){ const e=1-(1-v.dropT)*(1-v.dropT); gy=v.dropFromGy+(v.gy-v.dropFromGy)*e; }
+    _m.compose(_p.set((v.gx-cx)*VS,(gy-cy)*VS,(v.gz-cz)*VS),_q.set(0,0,0,1),_s.setScalar(VS));
+    solidMesh.setMatrixAt(i,_m); solidMesh.setColorAt(i,_col.setHex(hexInt(v.hex)));
+  }
+  solidMesh.count=solidList.length; solidMesh.instanceMatrix.needsUpdate=true;
+  if(solidMesh.instanceColor)solidMesh.instanceColor.needsUpdate=true;
 }
 function rebuildFallMesh(){ if(fallMesh){scene.remove(fallMesh);fallMesh.dispose();}
   const cap=Math.max(1,MAXVOX); fallMesh=new THREE.InstancedMesh(voxGeo,voxMatF,cap); fallMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -3818,13 +3842,12 @@ function findBox(hex){for(const b of binBoxes)if(b.color===hex)return b;return n
 // ===== the move: tap ONE voxel -> it flies in 3D and stacks into its box =====
 function collectOne(v, worldPoint){
   const hex=v.hex; const box=findBox(hex); if(!box){flashMsg('이 색 통이 없어요');return;}
-  removeVox(v);
-  computeConnectivity();
-  for(const x of voxels){ if(x.alive&&!x.attached){ spawnFaller(x,true); removeVox(x); } }   // disconnected chunks fall
-  flash(); rebuildAttached(); updateHUD();
+  v.alive=false; v.loose=false;          // collected -> into the bin
+  reconcile();                            // re-adhere; newly-disconnected voxels become loose and pile up
+  rebuildSolidList(); updateSolid(); flash(); updateHUD();
   flyTo3D(worldPoint, box, hex);
   refreshBins();
-  if(voxels.filter(z=>z.alive).length===0) setTimeout(onClear,600);
+  if(solidList.length===0) setTimeout(onClear,600);
 }
 function flyTo3D(worldPoint, box, hex){
   const idx=box.count+box.inflight; box.inflight++;
@@ -3847,13 +3870,14 @@ function findBin(hex){ return findBox(hex); }
 const ray=new THREE.Raycaster();
 let down=null,dragging=false;
 function ndc(ev){const r=canvas.getBoundingClientRect();return{x:((ev.clientX-r.left)/r.width)*2-1,y:-((ev.clientY-r.top)/r.height)*2+1};}
-canvas.addEventListener('pointerdown',ev=>{down={x:ev.clientX,y:ev.clientY};dragging=false;});
+canvas.addEventListener('pointerdown',ev=>{down={x:ev.clientX,y:ev.clientY};dragging=false;springBack=false;});
 window.addEventListener('pointermove',ev=>{ if(!down)return; const dx=ev.clientX-down.x,dy=ev.clientY-down.y;
-  if(!dragging&&Math.hypot(dx,dy)>6)dragging=true;
-  if(dragging){ camTheta-=dx*0.01; camPhi=Math.max(-0.12,Math.min(1.2,camPhi+dy*0.008)); applyCam(); down.x=ev.clientX; down.y=ev.clientY; }});
-window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging; down=null; if(moved)return;
-  const p=ndc(ev); ray.setFromCamera(p,camera); const hit=attachedMesh?ray.intersectObject(attachedMesh,false):[];
-  if(hit.length){const v=attachedList[hit[0].instanceId]; if(v) collectOne(v, hit[0].point.clone());}});
+  if(!dragging&&Math.hypot(dx,dy)>6){ dragging=true; releaseLoose(); rebuildSolidList(); updateSolid(); }   // tilt the base -> loose voxels dump off
+  if(dragging){ modelGroup.rotation.y+=dx*0.012; modelGroup.rotation.x=Math.max(-0.9,Math.min(0.9,modelGroup.rotation.x+dy*0.01)); down.x=ev.clientX; down.y=ev.clientY; }});
+window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging; down=null;
+  if(moved){ springBack=true; return; }    // let go -> base springs back upright
+  const p=ndc(ev); ray.setFromCamera(p,camera); const hit=solidMesh?ray.intersectObject(solidMesh,false):[];
+  if(hit.length){const v=solidList[hit[0].instanceId]; if(v) collectOne(v, hit[0].point.clone());}});
 
 // ===== physics =====
 function step(dt){ if(!fallers.length){fallMesh.count=0;return;} dt=Math.min(dt,1/30);
@@ -3876,12 +3900,16 @@ function resize(){const r=canvas.getBoundingClientRect();const w=Math.max(1,r.wi
 window.addEventListener('resize',resize);
 let last=performance.now();
 function tick(now){const dt=(now-last)/1000;last=now;step(dt);stepFlyers(dt);
+  let anim=false; for(const v of solidList){ if(v.loose&&v.dropT<1){ v.dropT=Math.min(1,v.dropT+dt*3.5); anim=true; } }
+  if(anim) updateSolid();
+  if(springBack){ const r=modelGroup.rotation; r.x*=0.82; r.y*=0.82; if(Math.abs(r.x)<0.003&&Math.abs(r.y)<0.003){r.set(0,0,0);springBack=false;} }
   if(flashT>0){flashT=Math.max(0,flashT-dt*6);document.getElementById('flash').style.opacity=flashT*0.45;}
   renderer.render(scene,camera);requestAnimationFrame(tick);}
 
 // load cube.glb geometry (keep the existing voxel look), then boot
 function boot(){ resize(); loadStage(0); requestAnimationFrame(tick); window.__ready=true;
-  window.collectColor=hex=>{const v=voxels.find(x=>x.alive&&x.hex===hex&&x.attached);if(v)collectOne(v, modelGroup.localToWorld(new THREE.Vector3((v.gx-cx)*VS,(v.gy-cy)*VS,(v.gz-cz)*VS)));};
+  window.collectColor=hex=>{const v=voxels.find(x=>x.alive&&x.hex===hex);if(v)collectOne(v, modelGroup.localToWorld(new THREE.Vector3((v.gx-cx)*VS,(v.gy-cy)*VS,(v.gz-cz)*VS)));};
+  window.__dumpLoose=()=>{ releaseLoose(); rebuildSolidList(); updateSolid(); };
   window.loadStage=loadStage; }
 (function(){
   try{ const loader=new THREE.GLTFLoader();
