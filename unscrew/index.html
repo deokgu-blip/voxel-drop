@@ -14,16 +14,27 @@
  #msg{position:absolute;left:0;right:0;top:40%;text-align:center;color:#fff;font-weight:900;font-size:19px;opacity:0;transition:opacity .25s;pointer-events:none;text-shadow:0 2px 8px rgba(0,0,0,.7);}
  #hint{position:absolute;left:0;right:0;bottom:54px;text-align:center;color:#cdd9ee;font-weight:700;font-size:13px;opacity:.85;pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.6);}
  #restart{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);pointer-events:auto;background:#ffce3a;border:3px solid #16304f;color:#16304f;font-weight:800;font-size:14px;padding:8px 22px;border-radius:16px;box-shadow:0 4px 0 #16304f;cursor:pointer;}
- #clear{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,20,.55);color:#fff;font-weight:900;font-size:34px;}
+ #clear{position:absolute;inset:0;display:none;z-index:32;overflow:hidden;pointer-events:auto;background:rgba(8,12,24,.45);}
+ #clear.show{display:block;}
+ #clear-confetti{position:absolute;inset:0;overflow:hidden;pointer-events:none;}
+ .confetti-piece{position:absolute;top:0;left:0;transform-origin:center;will-change:transform,opacity;pointer-events:none;}
+ #clear-title{position:absolute;top:37%;left:50%;transform:translate(-50%,-50%) rotate(-6deg);font-size:54px;font-weight:900;color:#fff;-webkit-text-fill-color:#fff;text-shadow:-3px -3px 0 #1a2e5a,3px -3px 0 #1a2e5a,-3px 3px 0 #1a2e5a,3px 3px 0 #1a2e5a,0 6px 0 #1a2e5a,0 9px 16px rgba(0,0,0,.55);white-space:nowrap;pointer-events:none;}
+ #clear-title .ch{display:inline-block;transform:scale(0);opacity:0;animation:char-pop .42s cubic-bezier(.2,1.7,.4,1) forwards;}
+ @keyframes char-pop{0%{transform:scale(0) translateY(8px);opacity:0;}55%{transform:scale(1.3) translateY(-5px);opacity:1;}100%{transform:scale(1) translateY(0);opacity:1;}}
+ #clear-tap{position:absolute;bottom:118px;left:0;right:0;text-align:center;font-size:21px;font-weight:900;color:#fff;text-shadow:0 3px 0 #1a2e5a,0 5px 10px rgba(0,0,0,.55);animation:cf-pulse 1.2s ease-in-out infinite;pointer-events:none;}
+ @keyframes cf-pulse{0%,100%{transform:scale(1);}50%{transform:scale(1.08);}}
+ #clear-heart{position:absolute;left:50%;top:55%;transform:translate(-50%,0) scale(0);font-size:88px;filter:drop-shadow(0 6px 14px rgba(0,0,0,.5));pointer-events:none;}
+ #clear-heart.go{animation:heart-rise 1.7s cubic-bezier(.2,.9,.3,1) forwards;}
+ @keyframes heart-rise{0%{opacity:0;transform:translate(-50%,90px) scale(.3);}30%{opacity:1;transform:translate(-50%,10px) scale(1.25);}100%{opacity:1;transform:translate(-50%,-90px) scale(1.05);}}
  .traylab{position:absolute;transform:translateX(-50%);font-weight:900;font-size:14px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7);pointer-events:none;z-index:5;white-space:nowrap;}
 </style></head><body>
 <div id="wrap">
 <canvas id="bgart"></canvas><canvas id="c"></canvas><div id="flash"></div>
 <div id="hud"><div id="lv">LV 1</div><div id="cnt">0 left</div></div>
 <div id="msg"></div>
-<div id="hint">Tap a voxel to collect · drag to rotate the base (loose voxels tumble off)</div>
+<div id="hint">Dig the voxels to find the hidden ❤️ · tap 💣 to blast · drag to rotate</div>
 <button id="restart">RESTART</button>
-<div id="clear">CLEARED!</div>
+<div id="clear"><div id="clear-confetti"></div><div id="clear-heart">❤️</div><div id="clear-title"></div><div id="clear-tap">Tap to continue</div></div>
 </div>
 <script>/**
  * @license
@@ -3734,7 +3745,9 @@ let stageIndex=0, voxels=[], occ=new Map(), cx=0,cy=0,cz=0, baseYGrid=0, modelLi
 let solidMesh=null, solidList=[], baseMesh=null;
 let dragX=0, dragY=0;
 let bins=[], NBINS=3;
-let traysLeft={};   // hex -> remaining trays for that colour (balance: ceil(count/9))
+let traysLeft={};   // (kept for display; not blocking in heart mode)
+let heartVox=[], bombVox=[], bombMarkers=[];
+const HEART_HEX='0xff2d7a';
 
 // ---- camera + base ----
 function applyCam(){ const r=camDist; camera.position.set(r*0.62, modelLift+r*0.42, r*0.92); camera.lookAt(0, modelLift*0.92, 0); camera.updateMatrixWorld(); }
@@ -3746,6 +3759,9 @@ function buildBaseMesh(w,d,topLocalY){
 }
 
 function clearLoose(){ for(const it of looseItems){ W.removeBody(it.body); scene.remove(it.mesh); } looseItems=[]; }
+function resetBins(){   // wipe all tray/box + in-flight state so each stage is independent
+  for(const box of binBoxes){ for(const m of box.stack)box.group.remove(m); box.stack=[];box.count=0;box.inflight=0; box.group.clear(); box.color=null; box.group.visible=false; }
+  for(const f of flyers3d) scene.remove(f.mesh); flyers3d=[]; }
 
 function loadStage(i){
   stageIndex=((i%STAGES.length)+STAGES.length)%STAGES.length;
@@ -3766,13 +3782,34 @@ function loadStage(i){
   vanishY = modelLift + baseTopLocalY - 22;          // world y below which loose vanish
   buildBaseMesh((xExt+2)*VS,(zExt+2)*VS, baseTopLocalY);
   applyCam();
-  clearLoose();
-  traysLeft={}; { const cnt={}; for(const v of voxels) cnt[v.hex]=(cnt[v.hex]||0)+1;   // balance: trays per colour = ceil(voxels/9)
-    for(const h in cnt) traysLeft[h]=Math.ceil(cnt[h]/9); }
+  clearLoose(); if(binBoxes.length) resetBins();
+  placeSpecials();                       // hide a heart + bombs inside
   reconcile(); rebuildSolid(); rebuildStructBody(); refreshBins(); updateHUD();
-  flashMsg('모든 블록을 제거하세요!', 2200);
+  flashMsg('숨겨진 ❤️ 를 찾아 꺼내세요!', 2200);
 }
 
+// embed a hidden HEART cluster (interior centre) + a few BOMB voxels
+function placeSpecials(){
+  heartVox=[]; bombVox=[]; for(const m of bombMarkers) modelGroup.remove(m); bombMarkers=[];
+  const vmap=new Map(voxels.map(v=>[KEY(v.gx,v.gy,v.gz),v]));
+  const posset=new Set(vmap.keys());
+  const interior=v=>NB.every(d=>posset.has(KEY(v.gx+d[0],v.gy+d[1],v.gz+d[2])));
+  let anchor=null,bd=1e9; for(const v of voxels){ const d=(v.gx-cx)**2+(v.gy-cy)**2+(v.gz-cz)**2; if(interior(v)&&d<bd){bd=d;anchor=v;} }
+  if(!anchor){ let best=voxels[0],bb=1e9; for(const v of voxels){const d=(v.gx-cx)**2+(v.gy-cy)**2+(v.gz-cz)**2; if(d<bb){bb=d;best=v;}} anchor=best; }
+  const HEART=[[0,0,0],[-1,0,0],[1,0,0],[-1,1,0],[1,1,0],[0,-1,0],[-1,0,1],[1,0,1],[0,0,1]];
+  for(const [dx,dy,dz] of HEART){ const v=vmap.get(KEY(anchor.gx+dx,anchor.gy+dy,anchor.gz+dz)); if(v){ v.heart=true; v.hex=HEART_HEX; heartVox.push(v);} }
+  if(!heartVox.length){ anchor.heart=true; anchor.hex=HEART_HEX; heartVox.push(anchor); }
+  // bombs: a few interior voxels not in the heart
+  const cand=voxels.filter(v=>!v.heart && interior(v));
+  for(let i=0;i<3 && cand.length;i++){ const v=cand[(Math.random()*cand.length)|0]; if(!v.bomb&&!v.heart){ v.bomb=true; v.hex='0x1a1a22'; bombVox.push(v); addBombMarker(v); } }
+}
+function addBombMarker(v){
+  const g=new THREE.Group();
+  const ball=new THREE.Mesh(new THREE.SphereGeometry(VS*0.34,12,10), new THREE.MeshStandardMaterial({color:0x15151c,roughness:0.5}));
+  const fuse=new THREE.Mesh(new THREE.BoxGeometry(VS*0.12,VS*0.3,VS*0.12), new THREE.MeshStandardMaterial({color:0xff7a2a,emissive:0xff5a00,emissiveIntensity:0.6}));
+  fuse.position.y=VS*0.4; g.add(ball); g.add(fuse);
+  g.position.set((v.gx-cx)*VS,(v.gy-cy)*VS,(v.gz-cz)*VS); g.userData.vx=v; modelGroup.add(g); bombMarkers.push(g);
+}
 function rebuildOcc(){ occ=new Map(); for(const v of voxels) if(v.alive&&!v.loose) occ.set(KEY(v.gx,v.gy,v.gz),v); }
 function at(x,y,z){ return occ.get(KEY(x,y,z)); }
 // adhesion: flood from base layer through non-loose voxels; orphans become loose dynamic bodies
@@ -3782,7 +3819,8 @@ function reconcile(){
   const st=[];
   for(const v of voxels){ if(v.alive&&!v.loose&&v.gy===baseYGrid){ v.attached=true; st.push(v); } }
   while(st.length){const v=st.pop(); for(const[dx,dy,dz]of NB){const n=at(v.gx+dx,v.gy+dy,v.gz+dz); if(n&&!n.loose&&!n.attached){n.attached=true;st.push(n);}}}
-  for(const v of voxels){ if(v.alive&&!v.loose&&!v.attached) spawnLoose(v); }
+  for(const v of voxels){ if(v.alive&&!v.loose&&(v.heart||v.bomb)) v.attached=true; }   // heart & bombs never fall (stay exposed)
+  for(const v of voxels){ if(v.alive&&!v.loose&&!v.attached&&!v.heart&&!v.bomb) spawnLoose(v); }
 }
 function spawnLoose(v){
   v.loose=true; v.attached=false;
@@ -3838,8 +3876,8 @@ function buildBoxes(){ binsGroup=new THREE.Group(); camera.add(binsGroup);
 function setBoxColor(box,hex){ if(box.color===hex)return; for(const m of box.stack)box.group.remove(m); box.stack=[];box.count=0;box.inflight=0;
   box.group.clear(); if(hex)box.group.add(makeBoxMesh(hex)); box.color=hex; box.group.visible=!!hex; }
 function refreshBins(){ if(!binBoxes.length)buildBoxes();
-  const cnt={};for(const v of voxels)if(v.alive)cnt[v.hex]=(cnt[v.hex]||0)+1;
-  const avail=Object.keys(cnt).filter(c=>(traysLeft[c]||0)>0).sort((a,b)=>cnt[b]-cnt[a]);
+  const cnt={};for(const v of voxels)if(v.alive&&!v.heart&&!v.bomb)cnt[v.hex]=(cnt[v.hex]||0)+1;   // normal voxels only
+  const avail=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]);   // unlimited refills (heart mode)
   const onBins=new Set(); for(const box of binBoxes){ if(box.color&&avail.includes(box.color)) onBins.add(box.color); }
   const waiting=avail.filter(c=>!onBins.has(c));
   for(const box of binBoxes){
@@ -3858,8 +3896,7 @@ function stepFlyers(dt){ for(let i=flyers3d.length-1;i>=0;i--){const f=flyers3d[
   _p.lerpVectors(f.from,f.to,tt); _p.y+=Math.sin(tt*Math.PI)*2.0; f.mesh.position.copy(_p); f.mesh.scale.setScalar(f.s0+(f.s1-f.s0)*tt); f.mesh.rotation.y+=dt*9;
   if(f.t>=1){ f.box.group.add(f.mesh); f.mesh.position.copy(f.cellL); f.mesh.rotation.set(0,0,0); f.mesh.scale.setScalar(VS*0.92);
     f.box.stack.push(f.mesh); f.box.count++; f.box.inflight=Math.max(0,f.box.inflight-1); flyers3d.splice(i,1);
-    if(f.box.count>=f.box.cap){ for(const m of f.box.stack)f.box.group.remove(m); f.box.stack=[];f.box.count=0;
-      traysLeft[f.box.color]=Math.max(0,(traysLeft[f.box.color]||1)-1); refreshBins(); } } } }
+    if(f.box.count>=f.box.cap){ for(const m of f.box.stack)f.box.group.remove(m); f.box.stack=[];f.box.count=0; refreshBins(); } } } }
 
 // ===== collect =====
 function collectAdhered(v, worldPoint){
@@ -3874,7 +3911,27 @@ function collectLoose(it){
   it.v.alive=false; W.removeBody(it.body); scene.remove(it.mesh); looseItems=looseItems.filter(x=>x!==it);
   updateHUD(); flyTo3D(wp, box, hex); refreshBins(); checkClear();
 }
-function checkClear(){ if(voxels.filter(v=>v.alive).length===0) setTimeout(onClear,700); }
+function checkClear(){}   // win is now heart-extraction, not remove-all
+function removeBombMarker(v){ for(let i=bombMarkers.length-1;i>=0;i--){ if(bombMarkers[i].userData.vx===v){ modelGroup.remove(bombMarkers[i]); bombMarkers.splice(i,1); } } }
+function extractHeart(v){
+  v.alive=false; const i=heartVox.indexOf(v); if(i>=0)heartVox.splice(i,1);
+  // little pink puff up
+  spawnLoose(v); const it=looseItems[looseItems.length-1]; it.body.velocity.set((Math.random()-0.5)*2, 7, (Math.random()-0.5)*2); it.v=v;
+  reconcile(); rebuildSolid(); rebuildStructBody(); updateHUD();
+  if(heartVox.length===0) onHeartFound();
+}
+function blastBomb(v){
+  const bx=v.gx,by=v.gy,bz=v.gz; removeBombMarker(v); let bi=bombVox.indexOf(v); if(bi>=0)bombVox.splice(bi,1);
+  for(const x of voxels){ if(!x.alive||x.loose||x.heart) continue;
+    if(Math.abs(x.gx-bx)<=1&&Math.abs(x.gy-by)<=1&&Math.abs(x.gz-bz)<=1){
+      if(x.bomb&&x!==v){ removeBombMarker(x); const j=bombVox.indexOf(x); if(j>=0)bombVox.splice(j,1); }
+      spawnLoose(x); const it=looseItems[looseItems.length-1];
+      const dir=new THREE.Vector3((x.gx-bx)||0.4,(x.gy-by)||0.5,(x.gz-bz)||0.4).normalize().applyQuaternion(modelGroup.quaternion);
+      it.body.velocity.set(dir.x*9+(Math.random()-0.5)*3, 6+Math.random()*4, dir.z*9+(Math.random()-0.5)*3);
+    }
+  }
+  reconcile(); rebuildSolid(); rebuildStructBody(); flashMsg('💥 펑!'); updateHUD();
+}
 
 // ===== input: tap=collect · drag=rotate base (free) =====
 const ray=new THREE.Raycaster();
@@ -3887,28 +3944,45 @@ window.addEventListener('pointermove',ev=>{ if(!down)return; const dx=ev.clientX
     modelGroup.quaternion.setFromEuler(new THREE.Euler(dragX,dragY,0)); syncStructBody(); down.x=ev.clientX; down.y=ev.clientY; }});
 window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging; down=null; if(moved)return;
   const p=ndc(ev); ray.setFromCamera(p,camera);
-  if(solidMesh){ const h=ray.intersectObject(solidMesh,false); if(h.length){const v=solidList[h[0].instanceId]; if(v){collectAdhered(v,h[0].point.clone());return;}} }
+  if(bombMarkers.length){ const hb=ray.intersectObjects(bombMarkers,true); if(hb.length){ let g=hb[0].object; while(g&&!g.userData.vx)g=g.parent; if(g&&g.userData.vx&&g.userData.vx.alive){ blastBomb(g.userData.vx); return; } } }
+  if(solidMesh){ const h=ray.intersectObject(solidMesh,false); if(h.length){const v=solidList[h[0].instanceId];
+    if(v){ if(v.heart)extractHeart(v); else if(v.bomb)blastBomb(v); else collectAdhered(v,h[0].point.clone()); return;} } }
   const lm=looseItems.map(it=>it.mesh); const hl=ray.intersectObjects(lm,false);
-  if(hl.length){ const it=looseItems.find(x=>x.mesh===hl[0].object); if(it) collectLoose(it); }});
+  if(hl.length){ const it=looseItems.find(x=>x.mesh===hl[0].object); if(it){ if(it.v.bomb)blastBomb(it.v); else collectLoose(it); } }});
 
 // ===== HUD =====
 let flashT=0; function flash(){flashT=1;}
 function flashMsg(t,ms){const m=document.getElementById('msg');m.textContent=t;m.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>m.style.opacity='0',ms||900);}
-function onClear(){const el=document.getElementById('clear');el.style.display='flex';setTimeout(()=>{el.style.display='none';loadStage(stageIndex+1);},1500);}
+// ===== heart-found celebration (confetti + floating heart) =====
+const CONFETTI_COLORS=['#ff5a5a','#ffd23a','#4cc9f0','#7be36b','#b18cff','#ff8fc7','#ffffff'];
+const _conf=[]; let _confRAF=0,_confLast=0,_confSpawn=0,_confActive=false;
+function buildClearTitle(text){ const el=document.getElementById('clear-title'); el.textContent='';
+  for(let i=0;i<text.length;i++){ const sp=document.createElement('span'); sp.className='ch'; sp.textContent=text[i]===' '?' ':text[i]; sp.style.animationDelay=(i*0.05).toFixed(3)+'s'; el.appendChild(sp);} }
+function spawnConfetti(W){ const star=Math.random()<0.22, color=CONFETTI_COLORS[(Math.random()*CONFETTI_COLORS.length)|0];
+  const el=document.createElement('div'); el.className='confetti-piece'; const w=star?14:(6+(Math.random()*8|0)),h=star?14:(10+(Math.random()*14|0));
+  el.style.width=w+'px';el.style.height=h+'px';el.style.background=color;el.style.borderRadius=star?'50%':'2px';
+  document.getElementById('clear-confetti').appendChild(el);
+  _conf.push({el,x:Math.random()*W,y:-30-Math.random()*120,vx:(Math.random()*2-1)*28,vy:8+Math.random()*18,ay:40+Math.random()*30,rot:Math.random()*360,rotV:(Math.random()*2-1)*180}); }
+function confLoop(){ const now=performance.now()*0.001; if(!_confLast)_confLast=now; const dt=Math.min(0.05,Math.max(0,now-_confLast)); _confLast=now;
+  const cf=document.getElementById('clear-confetti'); const W=cf.clientWidth||300,H=cf.clientHeight||500;
+  for(let i=_conf.length-1;i>=0;i--){const p=_conf[i]; p.vy+=p.ay*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.rot+=p.rotV*dt;
+    p.el.style.transform='translate3d('+(p.x|0)+'px,'+(p.y|0)+'px,0) rotate('+(p.rot|0)+'deg)'; if(p.y>H+100){p.el.remove();_conf.splice(i,1);}}
+  if(_confActive){ _confSpawn+=dt; while(_confSpawn>=0.05){_confSpawn-=0.05; spawnConfetti(W);} }
+  if(_confActive||_conf.length){ _confRAF=requestAnimationFrame(confLoop); } else { _confRAF=0;_confLast=0; } }
+function onHeartFound(){
+  const el=document.getElementById('clear'); el.classList.add('show');
+  buildClearTitle('하트 발견!');
+  const hb=document.getElementById('clear-heart'); hb.classList.remove('go'); void hb.offsetWidth; hb.classList.add('go');
+  const cf=document.getElementById('clear-confetti'); const W=cf.clientWidth||300; for(let i=0;i<45;i++) spawnConfetti(W);
+  _confActive=true; if(!_confRAF) _confRAF=requestAnimationFrame(confLoop);
+  const go=()=>{ el.removeEventListener('pointerdown',go); _confActive=false; el.classList.remove('show'); document.getElementById('clear-confetti').innerHTML=''; _conf.length=0; loadStage(stageIndex+1); };
+  el.addEventListener('pointerdown',go); setTimeout(()=>{ if(el.classList.contains('show')) go(); }, 3800);
+}
 function updateHUD(){const st=STAGES[stageIndex];document.getElementById('lv').textContent='LV '+st.id+' · '+st.name;
   document.getElementById('cnt').textContent=voxels.filter(v=>v.alive).length+' left';}
 document.getElementById('restart').addEventListener('click',()=>loadStage(stageIndex));
 let trayLabels=[];
-function updateTrayLabels(){
-  const wrap=document.getElementById('wrap'), wr=wrap.getBoundingClientRect(); const wp=new THREE.Vector3();
-  for(let i=0;i<binBoxes.length;i++){ const box=binBoxes[i]; let lab=trayLabels[i];
-    if(!lab){ lab=document.createElement('div'); lab.className='traylab'; wrap.appendChild(lab); trayLabels[i]=lab; }
-    if(!box.color){ lab.style.display='none'; continue; }
-    box.group.getWorldPosition(wp); wp.project(camera);
-    lab.style.display=''; lab.style.left=((wp.x*0.5+0.5)*wr.width)+'px'; lab.style.top=((-wp.y*0.5+0.5)*wr.height+28)+'px';
-    lab.textContent='×'+(traysLeft[box.color]||0);
-  }
-}
+function updateTrayLabels(){ for(const lab of trayLabels) lab.style.display='none'; }   // trays unlimited in heart mode
 // procedural pixel-art background (dark night: stars, moon, mountains)
 function drawBgArt(){
   const cv=document.getElementById('bgart'); if(!cv)return; const wr=document.getElementById('wrap').getBoundingClientRect();
