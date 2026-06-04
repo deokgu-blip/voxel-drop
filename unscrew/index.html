@@ -4,32 +4,27 @@
 <style>
  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
  html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;
-  background:radial-gradient(120% 90% at 50% 0%,#d6f1ff 0%,#a9e0fb 38%,#7fc9ef 62%,#f6d79a 100%);user-select:none;touch-action:none;}
- #c{position:fixed;inset:0;width:100%;height:100%;display:block;}
- #flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;}
- #hud{position:fixed;left:0;right:0;top:0;padding:16px 18px;display:flex;justify-content:space-between;color:#16304f;font-weight:800;text-shadow:0 1px 0 rgba(255,255,255,.6);pointer-events:none;}
+  background:#0a1422;user-select:none;touch-action:none;}
+ /* short-form portrait frame (9:16), centered with letterbox */
+ #wrap{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);height:100vh;aspect-ratio:9/16;max-width:100vw;overflow:hidden;
+  background:radial-gradient(120% 90% at 50% 0%,#d6f1ff 0%,#a9e0fb 38%,#7fc9ef 62%,#f6d79a 100%);box-shadow:0 0 40px rgba(0,0,0,.5);}
+ #c{position:absolute;inset:0;width:100%;height:100%;display:block;}
+ #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;}
+ #hud{position:absolute;left:0;right:0;top:0;padding:16px 18px;display:flex;justify-content:space-between;color:#16304f;font-weight:800;text-shadow:0 1px 0 rgba(255,255,255,.6);pointer-events:none;}
  #cnt{background:rgba(255,255,255,.55);padding:4px 12px;border-radius:14px;font-size:14px;}
- #msg{position:fixed;left:0;right:0;top:46%;text-align:center;color:#16304f;font-weight:800;font-size:18px;opacity:0;transition:opacity .2s;pointer-events:none;text-shadow:0 1px 0 #fff;}
- #bins{position:fixed;left:0;right:0;bottom:84px;display:flex;justify-content:center;gap:14px;pointer-events:none;}
- .bin{position:relative;width:64px;height:84px;border:4px solid #16304f;border-radius:12px;background:rgba(255,255,255,.35);overflow:hidden;display:flex;align-items:flex-end;justify-content:center;}
- .binswatch{position:absolute;top:0;left:0;right:0;height:16px;background:var(--c);border-bottom:2px solid #16304f;}
- .binfill{position:absolute;left:0;right:0;bottom:0;background:var(--c);opacity:.85;transition:height .25s;}
- .bincap{position:relative;z-index:2;font-weight:900;font-size:22px;color:#16304f;margin-bottom:6px;text-shadow:0 1px 0 #fff;}
- .bin.done{background:rgba(120,200,120,.5);}
- .bin.bump{animation:binbump .2s ease;}
- @keyframes binbump{50%{transform:translateY(-7px) scale(1.09);}}
- .flyer{position:fixed;width:28px;height:28px;margin:-14px;border:3px solid #16304f;border-radius:7px;z-index:60;pointer-events:none;box-shadow:0 3px 7px rgba(0,0,0,.35);transition:transform .34s cubic-bezier(.45,-0.25,.65,1);}
- #hint{position:fixed;left:0;right:0;bottom:54px;text-align:center;color:#16304f;font-weight:700;font-size:13px;opacity:.8;pointer-events:none;text-shadow:0 1px 0 #fff;}
- #restart{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);pointer-events:auto;background:#ffce3a;border:3px solid #16304f;color:#16304f;font-weight:800;font-size:14px;padding:8px 22px;border-radius:16px;box-shadow:0 4px 0 #16304f;cursor:pointer;}
- #clear{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(8,16,30,.45);color:#fff;font-weight:900;font-size:34px;}
+ #msg{position:absolute;left:0;right:0;top:42%;text-align:center;color:#16304f;font-weight:800;font-size:18px;opacity:0;transition:opacity .2s;pointer-events:none;text-shadow:0 1px 0 #fff;}
+ #hint{position:absolute;left:0;right:0;bottom:54px;text-align:center;color:#16304f;font-weight:700;font-size:13px;opacity:.8;pointer-events:none;text-shadow:0 1px 0 #fff;}
+ #restart{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);pointer-events:auto;background:#ffce3a;border:3px solid #16304f;color:#16304f;font-weight:800;font-size:14px;padding:8px 22px;border-radius:16px;box-shadow:0 4px 0 #16304f;cursor:pointer;}
+ #clear{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(8,16,30,.45);color:#fff;font-weight:900;font-size:34px;}
 </style></head><body>
+<div id="wrap">
 <canvas id="c"></canvas><div id="flash"></div>
 <div id="hud"><div id="lv">LV 1</div><div id="cnt">0 left</div></div>
 <div id="msg"></div>
-<div id="bins"></div>
 <div id="hint">Tap a voxel to collect it · base-connected voxels stay · drag to orbit</div>
 <button id="restart">RESTART</button>
 <div id="clear">CLEARED!</div>
+</div>
 <script>/**
  * @license
  * Copyright 2010-2021 Three.js Authors
@@ -3701,7 +3696,7 @@ const voxMat=new THREE.MeshStandardMaterial({roughness:0.95,metalness:0.0,map:vo
 const voxMatF=voxMat.clone();
 // ground + spotlight (diorama)
 const ground=new THREE.Mesh(new THREE.CircleGeometry(60,48),new THREE.MeshStandardMaterial({color:0xf4cf86,roughness:1}));
-ground.rotation.x=-Math.PI/2;scene.add(ground);
+ground.rotation.x=-Math.PI/2; ground.visible=false; scene.add(ground);   // hidden; the wooden base is the only platform
 const modelGroup=new THREE.Group();scene.add(modelGroup);
 
 const _m=new THREE.Matrix4(),_q=new THREE.Quaternion(),_s=new THREE.Vector3(),_p=new THREE.Vector3(),
@@ -3720,10 +3715,9 @@ function applyCam(){ const r=camDist;
   camera.lookAt(0,lookY,0); camera.updateMatrixWorld(); }
 function buildBase(w,d,topY){
   if(baseMesh){ scene.remove(baseMesh); baseMesh.traverse(o=>{if(o.geometry)o.geometry.dispose();}); }
-  baseMesh=new THREE.Group(); const h=0.9;
-  baseMesh.add(new THREE.Mesh(new THREE.BoxGeometry(w,h,d), new THREE.MeshStandardMaterial({color:0x8a5a2b,roughness:0.9}))).position.y=topY-h/2;
-  const top=new THREE.Mesh(new THREE.BoxGeometry(w*1.05,0.2,d*1.05), new THREE.MeshStandardMaterial({color:0xb07a3c,roughness:0.85}));
-  top.position.y=topY-0.06; baseMesh.add(top);
+  const h=1.0;                                   // ONE clean slab; its top sits just under the lowest voxels
+  baseMesh=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), new THREE.MeshStandardMaterial({color:0xb07a3c,roughness:0.85}));
+  baseMesh.position.set(0, topY-h/2, 0);
   scene.add(baseMesh);
 }
 
@@ -3786,10 +3780,9 @@ function findBin(hex){ for(const b of bins) if(b.color===hex) return b; return n
 function removeVox(v){ v.alive=false; byKey.delete(KEY(v.gx,v.gy,v.gz)); }
 function spawnFaller(v,burst){
   const world=modelGroup.localToWorld(new THREE.Vector3((v.gx-cx)*VS,(v.gy-cy)*VS,(v.gz-cz)*VS));
-  const dir=new THREE.Vector3(world.x,0,world.z); if(dir.lengthSq()<1e-3)dir.set(Math.random()-0.5,0,Math.random()-0.5); dir.normalize();
-  const out=0.8+Math.random()*1.8;
-  fallers.push({pos:world,vel:new THREE.Vector3(dir.x*out+(Math.random()-0.5),0.8+Math.random()*2,dir.z*out+(Math.random()-0.5)),
-    quat:new THREE.Quaternion(),av:new THREE.Vector3((Math.random()-0.5)*8,(Math.random()-0.5)*8,(Math.random()-0.5)*8),color:hexInt(v.hex)});
+  // natural collapse: near-zero initial velocity (tiny jitter), gentle tumble — gravity does the work (no outward fling)
+  fallers.push({pos:world,vel:new THREE.Vector3((Math.random()-0.5)*0.5,0,(Math.random()-0.5)*0.5),
+    quat:new THREE.Quaternion(),av:new THREE.Vector3((Math.random()-0.5)*1.8,(Math.random()-0.5)*1.8,(Math.random()-0.5)*1.8),color:hexInt(v.hex)});
 }
 
 // ===== 3D collection boxes (procedural: box + 3x3 grid; voxels fly in and stack) =====
@@ -3879,7 +3872,7 @@ function updateHUD(){const st=STAGES[stageIndex];document.getElementById('lv').t
   document.getElementById('cnt').textContent=voxels.filter(v=>v.alive).length+' left';}
 document.getElementById('restart').addEventListener('click',()=>loadStage(stageIndex));
 
-function resize(){const w=window.innerWidth,h=window.innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+function resize(){const r=canvas.getBoundingClientRect();const w=Math.max(1,r.width),h=Math.max(1,r.height);renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
 window.addEventListener('resize',resize);
 let last=performance.now();
 function tick(now){const dt=(now-last)/1000;last=now;step(dt);stepFlyers(dt);
