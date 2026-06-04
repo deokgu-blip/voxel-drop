@@ -27,7 +27,7 @@
 <div id="hud"><div id="lv">LV 1</div><div id="cnt">0 left</div></div>
 <div id="msg"></div>
 <div id="bins"></div>
-<div id="hint">Press a voxel to preview what drops · release to collect · drag to rotate</div>
+<div id="hint">Tap a voxel to collect it · base-connected voxels stay · drag to orbit</div>
 <button id="restart">RESTART</button>
 <div id="clear">CLEARED!</div>
 <script>/**
@@ -3709,11 +3709,23 @@ const _m=new THREE.Matrix4(),_q=new THREE.Quaternion(),_s=new THREE.Vector3(),_p
 const KEY=(x,y,z)=>x+','+y+','+z;
 const NB=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 
-let stageIndex=0, voxels=[], byKey=new Map(), coreKey=null, cx=0,cy=0,cz=0, modelScale=1, cubeWorld=1, groundY=0, camDist=30;
+let stageIndex=0, voxels=[], byKey=new Map(), cx=0,cy=0,cz=0, modelScale=1, cubeWorld=1, groundY=0, camDist=30;
 let attachedMesh=null, attachedList=[], fallMesh=null, fallers=[], MAXVOX=0;
 let bins=[], NBINS=3, BIN_CAP=9;
 let binsGroup=null, binBoxes=[], flyers3d=[];
+let baseYGrid=0, baseMesh=null, lookY=0, camTheta=0.5, camPhi=0.28;   // base anchor + camera orbit
 const GRAV=-30;
+function applyCam(){ const r=camDist;
+  camera.position.set(r*Math.sin(camTheta)*Math.cos(camPhi), lookY+r*Math.sin(camPhi), r*Math.cos(camTheta)*Math.cos(camPhi));
+  camera.lookAt(0,lookY,0); camera.updateMatrixWorld(); }
+function buildBase(w,d,topY){
+  if(baseMesh){ scene.remove(baseMesh); baseMesh.traverse(o=>{if(o.geometry)o.geometry.dispose();}); }
+  baseMesh=new THREE.Group(); const h=0.9;
+  baseMesh.add(new THREE.Mesh(new THREE.BoxGeometry(w,h,d), new THREE.MeshStandardMaterial({color:0x8a5a2b,roughness:0.9}))).position.y=topY-h/2;
+  const top=new THREE.Mesh(new THREE.BoxGeometry(w*1.05,0.2,d*1.05), new THREE.MeshStandardMaterial({color:0xb07a3c,roughness:0.85}));
+  top.position.y=topY-0.06; baseMesh.add(top);
+  scene.add(baseMesh);
+}
 
 function loadStage(i){
   stageIndex=((i%STAGES.length)+STAGES.length)%STAGES.length;
@@ -3723,41 +3735,30 @@ function loadStage(i){
   cx=(minx+maxx)/2;cy=(miny+maxy)/2;cz=(minz+maxz)/2;
   voxels=cubes.map(c=>({gx:c.x,gy:c.y,gz:c.z,hex:c.hex,alive:true,attached:true}));
   MAXVOX=voxels.length; byKey=new Map(); for(const v of voxels) byKey.set(KEY(v.gx,v.gy,v.gz),v);
-  // core = interior-most voxel near centre
-  const posset=new Set(voxels.map(v=>KEY(v.gx,v.gy,v.gz)));
-  const inter=v=>NB.reduce((a,d)=>a+(posset.has(KEY(v.gx+d[0],v.gy+d[1],v.gz+d[2]))?1:0),0);
-  let best=null,bd=1e9; for(const v of voxels){const d=(6-inter(v))*100+(v.gx-cx)**2+(v.gy-cy)**2+(v.gz-cz)**2; if(d<bd){bd=d;best=v;}}
-  coreKey=KEY(best.gx,best.gy,best.gz);
+  baseYGrid=miny;   // bottom-layer voxels are rooted to the base (받침대)
   // frame
   const xExt=maxx-minx+1,yExt=maxy-miny+1,zExt=maxz-minz+1;
   const effW=Math.sqrt(xExt*xExt+zExt*zExt), halfFov=(FOV*Math.PI/180)/2, aspect=camera.aspect||(390/844);
   camDist=Math.max(14,Math.min(150,Math.max(yExt/(2*0.52*Math.tan(halfFov)), effW/(2*0.86*Math.tan(halfFov)*aspect))));
   modelScale=1; cubeWorld=VS*modelScale;
   const halfH=(yExt*VS)/2, modelLift=halfH+camDist*0.10;
-  modelGroup.position.set(0,modelLift,0); modelGroup.scale.setScalar(modelScale); modelGroup.rotation.set(0.16,0.55,0);
-  groundY=modelLift-halfH-0.5*cubeWorld; ground.position.y=groundY;
-  const lookY=modelLift*0.62; camera.position.set(0,lookY+camDist*0.10,camDist); camera.lookAt(0,lookY,0);
+  modelGroup.position.set(0,modelLift,0); modelGroup.scale.setScalar(modelScale); modelGroup.rotation.set(0,0,0);
+  lookY=modelLift;
+  const bottomY=modelLift+(miny-cy)*VS-0.5*cubeWorld;   // world Y of model's lowest voxels
+  groundY=bottomY-0.5; ground.position.y=bottomY-0.55;
+  buildBase((xExt+2)*VS, (zExt+2)*VS, bottomY);
+  camTheta=0.5; camPhi=0.28; applyCam();
   fallers=[]; rebuildFallMesh();
   bins=[];
   computeConnectivity(); rebuildAttached(); refreshBins(); updateHUD();
 }
 
+// anchored to the BASE: voxels on the bottom layer are rooted; flood up from them.
 function computeConnectivity(){
   for(const v of voxels) v.attached=false;
-  const core=byKey.get(coreKey); if(!core||!core.alive){ reanchor(); }
-  const c2=byKey.get(coreKey); if(!c2||!c2.alive) return;
-  const st=[c2]; c2.attached=true;
+  const st=[];
+  for(const v of voxels){ if(v.alive && v.gy===baseYGrid){ v.attached=true; st.push(v); } }
   while(st.length){const v=st.pop(); for(const [dx,dy,dz] of NB){const n=byKey.get(KEY(v.gx+dx,v.gy+dy,v.gz+dz)); if(n&&n.alive&&!n.attached){n.attached=true;st.push(n);}}}
-}
-function reanchor(){
-  const seen=new Set(); let bestComp=null,bestSz=-1;
-  for(const v of voxels){ if(!v.alive) continue; const k=KEY(v.gx,v.gy,v.gz); if(seen.has(k)) continue;
-    const comp=[],st=[v]; seen.add(k);
-    while(st.length){const c=st.pop();comp.push(c); for(const[dx,dy,dz]of NB){const n=byKey.get(KEY(c.gx+dx,c.gy+dy,c.gz+dz)); if(n&&n.alive&&!seen.has(KEY(n.gx,n.gy,n.gz))){seen.add(KEY(n.gx,n.gy,n.gz));st.push(n);}}}
-    if(comp.length>bestSz){bestSz=comp.length;bestComp=comp;} }
-  if(!bestComp){coreKey=null;return;}
-  let best=null,bd=1e9; for(const v of bestComp){const d=(v.gx-cx)**2+(v.gy-cy)**2+(v.gz-cz)**2; if(d<bd){bd=d;best=v;}}
-  coreKey=best?KEY(best.gx,best.gy,best.gz):null;
 }
 function rebuildAttached(){
   if(attachedMesh){modelGroup.remove(attachedMesh);attachedMesh.dispose();}
@@ -3849,25 +3850,17 @@ function binBump(box){ if(!box.group)return; box.group.scale.setScalar(1.1); set
 function popBox(box){ for(const m of box.stack)box.group.remove(m); box.stack=[];box.count=0;box.inflight=0; binPopFx(box); refreshBins(); }
 function findBin(hex){ return findBox(hex); }
 
-// ===== input (press = preview what falls, release = collect, drag = rotate) =====
-const ray=new THREE.Raycaster(); const _white=new THREE.Color(0xffe24d);  // warm glow highlight (pops on any colour)
-let down=null,dragging=false,previewV=null,previewPt=null,previewIdx=[];
+// ===== input (tap = collect that voxel · drag = orbit camera) =====
+const ray=new THREE.Raycaster();
+let down=null,dragging=false;
 function ndc(ev){const r=canvas.getBoundingClientRect();return{x:((ev.clientX-r.left)/r.width)*2-1,y:-((ev.clientY-r.top)/r.height)*2+1};}
-function pickVox(ev){const p=ndc(ev);ray.setFromCamera(p,camera);const hit=attachedMesh?ray.intersectObject(attachedMesh,false):[];return hit.length?{v:attachedList[hit[0].instanceId],pt:hit[0].point.clone()}:null;}
-// pure simulation: which voxels would drop if v is removed (matches real reanchor behaviour, then restores)
-function wouldFallSet(v){ const savedCore=coreKey; v.alive=false; computeConnectivity();
-  const set=[v]; for(const x of voxels) if(x.alive&&!x.attached) set.push(x);
-  v.alive=true; coreKey=savedCore; computeConnectivity(); return set; }
-function showPreview(v){ clearPreview(); if(!attachedMesh)return;
-  for(const vv of wouldFallSet(v)){ const idx=attachedList.indexOf(vv); if(idx>=0){ _col.setHex(hexInt(vv.hex)).lerp(_white,0.55); attachedMesh.setColorAt(idx,_col); previewIdx.push({idx,hex:vv.hex}); } }
-  if(previewIdx.length&&attachedMesh.instanceColor)attachedMesh.instanceColor.needsUpdate=true; }
-function clearPreview(){ if(!previewIdx.length||!attachedMesh)return; for(const e of previewIdx) attachedMesh.setColorAt(e.idx,_col.setHex(hexInt(e.hex))); if(attachedMesh.instanceColor)attachedMesh.instanceColor.needsUpdate=true; previewIdx=[]; }
-canvas.addEventListener('pointerdown',ev=>{ down={x:ev.clientX,y:ev.clientY}; dragging=false; const h=pickVox(ev); if(h&&h.v){previewV=h.v;previewPt=h.pt;showPreview(h.v);} else previewV=null; });
+canvas.addEventListener('pointerdown',ev=>{down={x:ev.clientX,y:ev.clientY};dragging=false;});
 window.addEventListener('pointermove',ev=>{ if(!down)return; const dx=ev.clientX-down.x,dy=ev.clientY-down.y;
-  if(!dragging&&Math.hypot(dx,dy)>6){dragging=true;clearPreview();previewV=null;}
-  if(dragging){modelGroup.rotation.y+=dx*0.012;modelGroup.rotation.x=Math.max(-0.6,Math.min(0.6,modelGroup.rotation.x+dy*0.008));down.x=ev.clientX;down.y=ev.clientY;}});
+  if(!dragging&&Math.hypot(dx,dy)>6)dragging=true;
+  if(dragging){ camTheta-=dx*0.01; camPhi=Math.max(-0.12,Math.min(1.2,camPhi+dy*0.008)); applyCam(); down.x=ev.clientX; down.y=ev.clientY; }});
 window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging; down=null; if(moved)return;
-  if(previewV){const v=previewV,pt=previewPt;previewV=null;previewIdx=[];collectOne(v,pt);}});
+  const p=ndc(ev); ray.setFromCamera(p,camera); const hit=attachedMesh?ray.intersectObject(attachedMesh,false):[];
+  if(hit.length){const v=attachedList[hit[0].instanceId]; if(v) collectOne(v, hit[0].point.clone());}});
 
 // ===== physics =====
 function step(dt){ if(!fallers.length){fallMesh.count=0;return;} dt=Math.min(dt,1/30);
