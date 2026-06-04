@@ -3711,7 +3711,8 @@ const NB=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 
 let stageIndex=0, voxels=[], byKey=new Map(), coreKey=null, cx=0,cy=0,cz=0, modelScale=1, cubeWorld=1, groundY=0, camDist=30;
 let attachedMesh=null, attachedList=[], fallMesh=null, fallers=[], MAXVOX=0;
-let bins=[], colorQueue=[], NBINS=3, BIN_CAP=10;
+let bins=[], NBINS=3, BIN_CAP=9;
+let binsGroup=null, binBoxes=[], flyers3d=[];
 const GRAV=-30;
 
 function loadStage(i){
@@ -3738,7 +3739,7 @@ function loadStage(i){
   const lookY=modelLift*0.62; camera.position.set(0,lookY+camDist*0.10,camDist); camera.lookAt(0,lookY,0);
   fallers=[]; rebuildFallMesh();
   bins=[];
-  computeConnectivity(); rebuildAttached(); refreshBins(); buildBinUI(); updateHUD();
+  computeConnectivity(); rebuildAttached(); refreshBins(); updateHUD();
 }
 
 function computeConnectivity(){
@@ -3790,36 +3791,63 @@ function spawnFaller(v,burst){
     quat:new THREE.Quaternion(),av:new THREE.Vector3((Math.random()-0.5)*8,(Math.random()-0.5)*8,(Math.random()-0.5)*8),color:hexInt(v.hex)});
 }
 
-// bins always mirror the colours actually present (top NBINS by count), preserving fills
-function refreshBins(){
-  const cnt={}; for(const v of voxels) if(v.alive) cnt[v.hex]=(cnt[v.hex]||0)+1;
+// ===== 3D collection boxes (procedural: box + 3x3 grid; voxels fly in and stack) =====
+scene.add(camera);                          // so camera-attached bins render
+const GRIDN=3;                              // 3x3 = 9 cells
+function makeGridTex(hex){const cv=document.createElement('canvas');cv.width=cv.height=192;const g=cv.getContext('2d');
+  g.fillStyle='#'+hex.replace('0x','');g.globalAlpha=0.55;g.fillRect(0,0,192,192);g.globalAlpha=1;
+  g.strokeStyle='#16304f';g.lineWidth=8;for(let i=0;i<=GRIDN;i++){const p=i*64;g.beginPath();g.moveTo(p,0);g.lineTo(p,192);g.moveTo(0,p);g.lineTo(192,p);g.stroke();}
+  const t=new THREE.CanvasTexture(cv);if(THREE.sRGBEncoding!==undefined)t.encoding=THREE.sRGBEncoding;return t;}
+function makeBoxMesh(hex){const grp=new THREE.Group();
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(GRIDN,GRIDN),new THREE.MeshBasicMaterial({map:makeGridTex(hex),transparent:true}));
+  floor.rotation.x=-Math.PI/2;floor.position.y=-0.5;grp.add(floor);
+  grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(GRIDN,1.0,GRIDN)),new THREE.LineBasicMaterial({color:0x16304f})));
+  return grp;}
+function cellLocal(idx){const c=idx%GRIDN,r=Math.floor(idx/GRIDN);return new THREE.Vector3((c-1)*1.0,0.05,(r-1)*1.0);}
+function buildBoxes(){
+  binsGroup=new THREE.Group(); camera.add(binsGroup);
+  binsGroup.position.set(0,-2.7,-11); binsGroup.scale.setScalar(0.34); binsGroup.rotation.x=0.6;  // bottom tray, tilted so grid shows
+  binBoxes=[]; const gap=3.5,total=(NBINS-1)*gap;
+  for(let i=0;i<NBINS;i++){const g=new THREE.Group();g.position.set(i*gap-total/2,0,0);binsGroup.add(g);
+    binBoxes.push({group:g,color:null,count:0,inflight:0,cap:9,stack:[]});}}
+function setBoxColor(box,hex){ if(box.color===hex)return;
+  for(const m of box.stack)box.group.remove(m); box.stack=[];box.count=0;box.inflight=0;
+  box.group.clear(); if(hex)box.group.add(makeBoxMesh(hex)); box.color=hex; box.group.visible=!!hex; }
+function refreshBins(){ if(!binBoxes.length)buildBoxes();
+  const cnt={};for(const v of voxels)if(v.alive)cnt[v.hex]=(cnt[v.hex]||0)+1;
   const present=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]).slice(0,NBINS);
-  const oldFill={}; for(const b of bins) if(b.color) oldFill[b.color]=b.fill;
-  bins=present.map(c=>({color:c,cap:BIN_CAP,fill:oldFill[c]||0}));
-}
+  const keep=new Set(present.filter(c=>binBoxes.some(b=>b.color===c)));
+  const need=present.filter(c=>!keep.has(c));
+  for(const box of binBoxes){ if(box.color&&keep.has(box.color))continue; setBoxColor(box,need.shift()||null); } }
+function findBox(hex){for(const b of binBoxes)if(b.color===hex)return b;return null;}
 
-// ===== the move: tap ONE voxel -> it flies into its colour bin =====
+// ===== the move: tap ONE voxel -> it flies in 3D and stacks into its box =====
 function collectOne(v, worldPoint){
-  const hex=v.hex; if(!findBin(hex)){ flashMsg('이 색 통이 없어요'); return; }
+  const hex=v.hex; const box=findBox(hex); if(!box){flashMsg('이 색 통이 없어요');return;}
   removeVox(v);
   computeConnectivity();
   for(const x of voxels){ if(x.alive&&!x.attached){ spawnFaller(x,true); removeVox(x); } }   // disconnected chunks fall
-  flash(); rebuildAttached(); refreshBins(); buildBinUI(); updateHUD();
-  const idx=Math.max(0, bins.findIndex(b=>b.color===hex));
-  flyToBin(worldPoint, idx, hex, ()=>{ const b=findBin(hex); if(b){ b.fill++; if(b.fill>=b.cap){b.fill-=b.cap; binPopFx(b);} } buildBinUI(); });
-  if(attachedList.length===0) setTimeout(onClear,400);
+  flash(); rebuildAttached(); updateHUD();
+  flyTo3D(worldPoint, box, hex);
+  refreshBins();
+  if(voxels.filter(z=>z.alive).length===0) setTimeout(onClear,600);
 }
-function flyToBin(worldPoint, binIdx, hex, onArrive){
-  const pr=worldPoint.clone().project(camera);
-  const sx=(pr.x*0.5+0.5)*window.innerWidth, sy=(-pr.y*0.5+0.5)*window.innerHeight;
-  const row=document.getElementById('bins'); const binEl=row.children[binIdx];
-  let bx=window.innerWidth/2, by=window.innerHeight-120;
-  if(binEl){ const r=binEl.getBoundingClientRect(); bx=r.left+r.width/2; by=r.top+r.height/2; }
-  const f=document.createElement('div'); f.className='flyer'; f.style.background='#'+hex.replace('0x','');
-  f.style.left=sx+'px'; f.style.top=sy+'px'; document.body.appendChild(f);
-  requestAnimationFrame(()=>{ f.style.transform='translate('+(bx-sx)+'px,'+(by-sy)+'px) scale(0.35)'; });
-  setTimeout(()=>{ f.remove(); if(binEl){ binEl.classList.add('bump'); setTimeout(()=>binEl.classList.remove('bump'),200);} if(onArrive)onArrive(); }, 340);
+function flyTo3D(worldPoint, box, hex){
+  const idx=box.count+box.inflight; box.inflight++;
+  const cellL=cellLocal(idx); const cellW=box.group.localToWorld(cellL.clone());
+  const mat=voxMat.clone(); mat.color.setHex(hexInt(hex));
+  const mesh=new THREE.Mesh(voxGeo,mat); mesh.position.copy(worldPoint); mesh.scale.setScalar(cubeWorld); scene.add(mesh);
+  const bs=binsGroup.scale.x;
+  flyers3d.push({mesh,from:worldPoint.clone(),to:cellW,cellL,t:0,dur:0.5,box,hex,s0:cubeWorld,s1:cubeWorld*0.92*bs});
 }
+function stepFlyers(dt){ for(let i=flyers3d.length-1;i>=0;i--){const f=flyers3d[i]; f.t+=dt/f.dur; const tt=Math.min(1,f.t);
+  _p.lerpVectors(f.from,f.to,tt); _p.y+=Math.sin(tt*Math.PI)*2.2; f.mesh.position.copy(_p); f.mesh.scale.setScalar(f.s0+(f.s1-f.s0)*tt); f.mesh.rotation.y+=dt*9; f.mesh.rotation.x+=dt*6;
+  if(f.t>=1){ f.box.group.add(f.mesh); f.mesh.position.copy(f.cellL); f.mesh.rotation.set(0,0,0); f.mesh.scale.setScalar(cubeWorld*0.92);
+    f.box.stack.push(f.mesh); f.box.count++; f.box.inflight=Math.max(0,f.box.inflight-1); flyers3d.splice(i,1);
+    binBump(f.box); if(f.box.count>=f.box.cap) popBox(f.box); } } }
+function binBump(box){ if(!box.group)return; box.group.scale.setScalar(1.1); setTimeout(()=>{if(box.group)box.group.scale.setScalar(1.0);},120); }
+function popBox(box){ for(const m of box.stack)box.group.remove(m); box.stack=[];box.count=0;box.inflight=0; binPopFx(box); refreshBins(); }
+function findBin(hex){ return findBox(hex); }
 
 // ===== input =====
 const ray=new THREE.Raycaster();
@@ -3841,16 +3869,7 @@ function step(dt){ if(!fallers.length){fallMesh.count=0;return;} dt=Math.min(dt,
   let n=0; for(const f of fallers){_m.compose(f.pos,f.quat,_s.setScalar(cubeWorld));fallMesh.setMatrixAt(n,_m);fallMesh.setColorAt(n,_col.setHex(f.color));n++;}
   fallMesh.count=n; fallMesh.instanceMatrix.needsUpdate=true; if(fallMesh.instanceColor)fallMesh.instanceColor.needsUpdate=true;}
 
-// ===== HUD / bins UI =====
-function buildBinUI(){
-  const row=document.getElementById('bins'); row.innerHTML='';
-  for(const b of bins){ const d=document.createElement('div'); d.className='bin';
-    if(b.color){ d.style.setProperty('--c','#'+b.color.replace('0x','')); d.style.background='color-mix(in srgb, #'+b.color.replace('0x','')+' 30%, rgba(255,255,255,.35))';
-      d.innerHTML='<div class="binswatch"></div><div class="binfill"></div><span class="bincap">'+(b.cap-b.fill)+'</span>';
-      d.querySelector('.binfill').style.height=(100*b.fill/b.cap)+'%'; }
-    else { d.classList.add('done'); d.innerHTML='<span class="bincap">✓</span>'; }
-    row.appendChild(d); }
-}
+// ===== HUD =====
 let flashT=0; function flash(){flashT=1;}
 function flashMsg(t){const m=document.getElementById('msg');m.textContent=t;m.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>m.style.opacity='0',900);}
 function binPopFx(b){flashMsg('통 비움! 🎉');}
@@ -3862,7 +3881,7 @@ document.getElementById('restart').addEventListener('click',()=>loadStage(stageI
 function resize(){const w=window.innerWidth,h=window.innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
 window.addEventListener('resize',resize);
 let last=performance.now();
-function tick(now){const dt=(now-last)/1000;last=now;step(dt);
+function tick(now){const dt=(now-last)/1000;last=now;step(dt);stepFlyers(dt);
   if(flashT>0){flashT=Math.max(0,flashT-dt*6);document.getElementById('flash').style.opacity=flashT*0.45;}
   renderer.render(scene,camera);requestAnimationFrame(tick);}
 
