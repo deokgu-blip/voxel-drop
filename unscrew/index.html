@@ -14,6 +14,7 @@
  #hint{position:absolute;left:0;right:0;bottom:54px;text-align:center;color:#16304f;font-weight:700;font-size:13px;opacity:.8;pointer-events:none;text-shadow:0 1px 0 #fff;}
  #restart{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);pointer-events:auto;background:#ffce3a;border:3px solid #16304f;color:#16304f;font-weight:800;font-size:14px;padding:8px 22px;border-radius:16px;box-shadow:0 4px 0 #16304f;cursor:pointer;}
  #clear{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(8,16,30,.45);color:#fff;font-weight:900;font-size:34px;}
+ .traylab{position:absolute;transform:translateX(-50%);font-weight:900;font-size:13px;color:#16304f;text-shadow:0 1px 2px rgba(0,0,0,.35),0 0 3px #fff;pointer-events:none;z-index:5;white-space:nowrap;}
 </style></head><body>
 <div id="wrap">
 <canvas id="c"></canvas><div id="flash"></div>
@@ -3732,6 +3733,7 @@ let stageIndex=0, voxels=[], occ=new Map(), cx=0,cy=0,cz=0, baseYGrid=0, modelLi
 let solidMesh=null, solidList=[], baseMesh=null;
 let dragX=0, dragY=0;
 let bins=[], NBINS=3;
+let traysLeft={};   // hex -> remaining trays for that colour (balance: ceil(count/9))
 
 // ---- camera + base ----
 function applyCam(){ const r=camDist; camera.position.set(r*0.62, modelLift+r*0.42, r*0.92); camera.lookAt(0, modelLift*0.92, 0); camera.updateMatrixWorld(); }
@@ -3763,6 +3765,8 @@ function loadStage(i){
   buildBaseMesh((xExt+2)*VS,(zExt+2)*VS, baseTopLocalY);
   applyCam();
   clearLoose();
+  traysLeft={}; { const cnt={}; for(const v of voxels) cnt[v.hex]=(cnt[v.hex]||0)+1;   // balance: trays per colour = ceil(voxels/9)
+    for(const h in cnt) traysLeft[h]=Math.ceil(cnt[h]/9); }
   reconcile(); rebuildSolid(); rebuildStructBody(); refreshBins(); updateHUD();
 }
 
@@ -3832,7 +3836,7 @@ function setBoxColor(box,hex){ if(box.color===hex)return; for(const m of box.sta
   box.group.clear(); if(hex)box.group.add(makeBoxMesh(hex)); box.color=hex; box.group.visible=!!hex; }
 function refreshBins(){ if(!binBoxes.length)buildBoxes();
   const cnt={};for(const v of voxels)if(v.alive)cnt[v.hex]=(cnt[v.hex]||0)+1;
-  const present=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]).slice(0,NBINS);
+  const present=Object.keys(cnt).filter(c=>(traysLeft[c]||0)>0).sort((a,b)=>cnt[b]-cnt[a]).slice(0,NBINS);
   const keep=new Set(present.filter(c=>binBoxes.some(b=>b.color===c)));
   const need=present.filter(c=>!keep.has(c));
   for(const box of binBoxes){ if(box.color&&keep.has(box.color))continue; setBoxColor(box,need.shift()||null); } }
@@ -3847,20 +3851,21 @@ function stepFlyers(dt){ for(let i=flyers3d.length-1;i>=0;i--){const f=flyers3d[
   _p.lerpVectors(f.from,f.to,tt); _p.y+=Math.sin(tt*Math.PI)*2.0; f.mesh.position.copy(_p); f.mesh.scale.setScalar(f.s0+(f.s1-f.s0)*tt); f.mesh.rotation.y+=dt*9;
   if(f.t>=1){ f.box.group.add(f.mesh); f.mesh.position.copy(f.cellL); f.mesh.rotation.set(0,0,0); f.mesh.scale.setScalar(VS*0.92);
     f.box.stack.push(f.mesh); f.box.count++; f.box.inflight=Math.max(0,f.box.inflight-1); flyers3d.splice(i,1);
-    if(f.box.count>=f.box.cap){ for(const m of f.box.stack)f.box.group.remove(m); f.box.stack=[];f.box.count=0; flashMsg('통 비움! 🎉'); refreshBins(); } } } }
+    if(f.box.count>=f.box.cap){ for(const m of f.box.stack)f.box.group.remove(m); f.box.stack=[];f.box.count=0;
+      traysLeft[f.box.color]=Math.max(0,(traysLeft[f.box.color]||1)-1); refreshBins(); } } } }
 
 // ===== collect =====
 function collectAdhered(v, worldPoint){
   const hex=v.hex; const box=findBox(hex); if(!box){flashMsg('이 색 통이 없어요');return;}
   v.alive=false;
-  reconcile(); rebuildSolid(); rebuildStructBody(); flash(); updateHUD();
+  reconcile(); rebuildSolid(); rebuildStructBody(); updateHUD();
   flyTo3D(worldPoint, box, hex); refreshBins(); checkClear();
 }
 function collectLoose(it){
-  const hex=it.v.hex; const box=findBox(hex); if(!box)return;
+  const hex=it.v.hex; const box=findBox(hex); if(!box){flashMsg('이 색 트레이 소진');return;}
   const wp=it.mesh.position.clone();
   it.v.alive=false; W.removeBody(it.body); scene.remove(it.mesh); looseItems=looseItems.filter(x=>x!==it);
-  flash(); updateHUD(); flyTo3D(wp, box, hex); refreshBins(); checkClear();
+  updateHUD(); flyTo3D(wp, box, hex); refreshBins(); checkClear();
 }
 function checkClear(){ if(voxels.filter(v=>v.alive).length===0) setTimeout(onClear,700); }
 
@@ -3886,6 +3891,17 @@ function onClear(){const el=document.getElementById('clear');el.style.display='f
 function updateHUD(){const st=STAGES[stageIndex];document.getElementById('lv').textContent='LV '+st.id+' · '+st.name;
   document.getElementById('cnt').textContent=voxels.filter(v=>v.alive).length+' left';}
 document.getElementById('restart').addEventListener('click',()=>loadStage(stageIndex));
+let trayLabels=[];
+function updateTrayLabels(){
+  const wrap=document.getElementById('wrap'), wr=wrap.getBoundingClientRect(); const wp=new THREE.Vector3();
+  for(let i=0;i<binBoxes.length;i++){ const box=binBoxes[i]; let lab=trayLabels[i];
+    if(!lab){ lab=document.createElement('div'); lab.className='traylab'; wrap.appendChild(lab); trayLabels[i]=lab; }
+    if(!box.color){ lab.style.display='none'; continue; }
+    box.group.getWorldPosition(wp); wp.project(camera);
+    lab.style.display=''; lab.style.left=((wp.x*0.5+0.5)*wr.width)+'px'; lab.style.top=((-wp.y*0.5+0.5)*wr.height+28)+'px';
+    lab.textContent='트레이 ×'+(traysLeft[box.color]||0);
+  }
+}
 function resize(){const r=canvas.getBoundingClientRect();const w=Math.max(1,r.width),h=Math.max(1,r.height);renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
 window.addEventListener('resize',resize);
 
@@ -3896,8 +3912,7 @@ function tick(now){const dt=Math.min(0.033,(now-last)/1000);last=now;
     it.mesh.position.set(it.body.position.x,it.body.position.y,it.body.position.z);
     it.mesh.quaternion.set(it.body.quaternion.x,it.body.quaternion.y,it.body.quaternion.z,it.body.quaternion.w);
     if(it.body.position.y<vanishY){ W.removeBody(it.body); scene.remove(it.mesh); it.v.alive=false; looseItems.splice(i,1); updateHUD(); refreshBins(); checkClear(); } }
-  stepFlyers(dt);
-  if(flashT>0){flashT=Math.max(0,flashT-dt*6);document.getElementById('flash').style.opacity=flashT*0.45;}
+  stepFlyers(dt); updateTrayLabels();
   renderer.render(scene,camera);requestAnimationFrame(tick);}
 
 function boot(){ resize(); loadStage(0); requestAnimationFrame(tick); window.__ready=true;
