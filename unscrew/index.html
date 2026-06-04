@@ -3,21 +3,22 @@
 <title>Voxel Unscrew</title>
 <style>
  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
- html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0a1422;user-select:none;touch-action:none;}
+ html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#05080f;user-select:none;touch-action:none;}
  #wrap{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);height:100vh;aspect-ratio:9/16;max-width:100vw;overflow:hidden;
-  background:radial-gradient(120% 90% at 50% 0%,#d6f1ff 0%,#a9e0fb 38%,#7fc9ef 62%,#f6d79a 100%);box-shadow:0 0 40px rgba(0,0,0,.5);}
+  background:radial-gradient(130% 100% at 50% 8%,#2b2c54 0%,#1b1d3e 42%,#11132a 72%,#0a0b1c 100%);box-shadow:0 0 40px rgba(0,0,0,.7);}
+ #bgart{position:absolute;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;}
  #c{position:absolute;inset:0;width:100%;height:100%;display:block;}
  #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;}
- #hud{position:absolute;left:0;right:0;top:0;padding:16px 18px;display:flex;justify-content:space-between;color:#16304f;font-weight:800;text-shadow:0 1px 0 rgba(255,255,255,.6);pointer-events:none;}
- #cnt{background:rgba(255,255,255,.55);padding:4px 12px;border-radius:14px;font-size:14px;}
- #msg{position:absolute;left:0;right:0;top:42%;text-align:center;color:#16304f;font-weight:800;font-size:18px;opacity:0;transition:opacity .2s;pointer-events:none;text-shadow:0 1px 0 #fff;}
- #hint{position:absolute;left:0;right:0;bottom:54px;text-align:center;color:#16304f;font-weight:700;font-size:13px;opacity:.8;pointer-events:none;text-shadow:0 1px 0 #fff;}
+ #hud{position:absolute;left:0;right:0;top:0;padding:16px 18px;display:flex;justify-content:space-between;color:#eaf1ff;font-weight:800;text-shadow:0 2px 4px rgba(0,0,0,.6);pointer-events:none;}
+ #cnt{background:rgba(255,255,255,.14);padding:4px 12px;border-radius:14px;font-size:14px;}
+ #msg{position:absolute;left:0;right:0;top:40%;text-align:center;color:#fff;font-weight:900;font-size:19px;opacity:0;transition:opacity .25s;pointer-events:none;text-shadow:0 2px 8px rgba(0,0,0,.7);}
+ #hint{position:absolute;left:0;right:0;bottom:54px;text-align:center;color:#cdd9ee;font-weight:700;font-size:13px;opacity:.85;pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.6);}
  #restart{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);pointer-events:auto;background:#ffce3a;border:3px solid #16304f;color:#16304f;font-weight:800;font-size:14px;padding:8px 22px;border-radius:16px;box-shadow:0 4px 0 #16304f;cursor:pointer;}
- #clear{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(8,16,30,.45);color:#fff;font-weight:900;font-size:34px;}
- .traylab{position:absolute;transform:translateX(-50%);font-weight:900;font-size:13px;color:#16304f;text-shadow:0 1px 2px rgba(0,0,0,.35),0 0 3px #fff;pointer-events:none;z-index:5;white-space:nowrap;}
+ #clear{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,20,.55);color:#fff;font-weight:900;font-size:34px;}
+ .traylab{position:absolute;transform:translateX(-50%);font-weight:900;font-size:14px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7);pointer-events:none;z-index:5;white-space:nowrap;}
 </style></head><body>
 <div id="wrap">
-<canvas id="c"></canvas><div id="flash"></div>
+<canvas id="bgart"></canvas><canvas id="c"></canvas><div id="flash"></div>
 <div id="hud"><div id="lv">LV 1</div><div id="cnt">0 left</div></div>
 <div id="msg"></div>
 <div id="hint">Tap a voxel to collect · drag to rotate the base (loose voxels tumble off)</div>
@@ -3754,6 +3755,7 @@ function loadStage(i){
   cx=(minx+maxx)/2;cy=(miny+maxy)/2;cz=(minz+maxz)/2;
   voxels=cubes.map(c=>({gx:c.x,gy:c.y,gz:c.z,hex:c.hex,alive:true,loose:false,attached:true}));
   MAXVOX=voxels.length; baseYGrid=miny;
+  if(solidMesh){modelGroup.remove(solidMesh);solidMesh.dispose();solidMesh=null;}   // recreate sized to THIS stage
   const xExt=maxx-minx+1,yExt=maxy-miny+1,zExt=maxz-minz+1;
   const effW=Math.sqrt(xExt*xExt+zExt*zExt), halfFov=(FOV*Math.PI/180)/2, aspect=camera.aspect||0.5625;
   camDist=Math.max(16,Math.min(150,Math.max(yExt/(2*0.5*Math.tan(halfFov)), effW/(2*0.8*Math.tan(halfFov)*aspect))));
@@ -3768,6 +3770,7 @@ function loadStage(i){
   traysLeft={}; { const cnt={}; for(const v of voxels) cnt[v.hex]=(cnt[v.hex]||0)+1;   // balance: trays per colour = ceil(voxels/9)
     for(const h in cnt) traysLeft[h]=Math.ceil(cnt[h]/9); }
   reconcile(); rebuildSolid(); rebuildStructBody(); refreshBins(); updateHUD();
+  flashMsg('모든 블록을 제거하세요!', 2200);
 }
 
 function rebuildOcc(){ occ=new Map(); for(const v of voxels) if(v.alive&&!v.loose) occ.set(KEY(v.gx,v.gy,v.gz),v); }
@@ -3836,10 +3839,14 @@ function setBoxColor(box,hex){ if(box.color===hex)return; for(const m of box.sta
   box.group.clear(); if(hex)box.group.add(makeBoxMesh(hex)); box.color=hex; box.group.visible=!!hex; }
 function refreshBins(){ if(!binBoxes.length)buildBoxes();
   const cnt={};for(const v of voxels)if(v.alive)cnt[v.hex]=(cnt[v.hex]||0)+1;
-  const present=Object.keys(cnt).filter(c=>(traysLeft[c]||0)>0).sort((a,b)=>cnt[b]-cnt[a]).slice(0,NBINS);
-  const keep=new Set(present.filter(c=>binBoxes.some(b=>b.color===c)));
-  const need=present.filter(c=>!keep.has(c));
-  for(const box of binBoxes){ if(box.color&&keep.has(box.color))continue; setBoxColor(box,need.shift()||null); } }
+  const avail=Object.keys(cnt).filter(c=>(traysLeft[c]||0)>0).sort((a,b)=>cnt[b]-cnt[a]);
+  const onBins=new Set(); for(const box of binBoxes){ if(box.color&&avail.includes(box.color)) onBins.add(box.color); }
+  const waiting=avail.filter(c=>!onBins.has(c));
+  for(const box of binBoxes){
+    if(box.color&&avail.includes(box.color)) continue;     // still valid -> keep its tray
+    if(waiting.length) setBoxColor(box, waiting.shift());   // a colour is waiting -> swap to it
+    // else: no waiting colour -> leave the tray as-is (don't blank it)
+  } }
 function findBox(hex){for(const b of binBoxes)if(b.color===hex)return b;return null;}
 function flyTo3D(worldPoint, box, hex){
   const idx=box.count+box.inflight; box.inflight++;
@@ -3886,7 +3893,7 @@ window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging;
 
 // ===== HUD =====
 let flashT=0; function flash(){flashT=1;}
-function flashMsg(t){const m=document.getElementById('msg');m.textContent=t;m.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>m.style.opacity='0',900);}
+function flashMsg(t,ms){const m=document.getElementById('msg');m.textContent=t;m.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>m.style.opacity='0',ms||900);}
 function onClear(){const el=document.getElementById('clear');el.style.display='flex';setTimeout(()=>{el.style.display='none';loadStage(stageIndex+1);},1500);}
 function updateHUD(){const st=STAGES[stageIndex];document.getElementById('lv').textContent='LV '+st.id+' · '+st.name;
   document.getElementById('cnt').textContent=voxels.filter(v=>v.alive).length+' left';}
@@ -3899,10 +3906,26 @@ function updateTrayLabels(){
     if(!box.color){ lab.style.display='none'; continue; }
     box.group.getWorldPosition(wp); wp.project(camera);
     lab.style.display=''; lab.style.left=((wp.x*0.5+0.5)*wr.width)+'px'; lab.style.top=((-wp.y*0.5+0.5)*wr.height+28)+'px';
-    lab.textContent='트레이 ×'+(traysLeft[box.color]||0);
+    lab.textContent='×'+(traysLeft[box.color]||0);
   }
 }
-function resize(){const r=canvas.getBoundingClientRect();const w=Math.max(1,r.width),h=Math.max(1,r.height);renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+// procedural pixel-art background (dark night: stars, moon, mountains)
+function drawBgArt(){
+  const cv=document.getElementById('bgart'); if(!cv)return; const wr=document.getElementById('wrap').getBoundingClientRect();
+  cv.width=Math.max(1,Math.round(wr.width)); cv.height=Math.max(1,Math.round(wr.height));
+  const W=cv.width,H=cv.height,g=cv.getContext('2d'); g.imageSmoothingEnabled=false; g.clearRect(0,0,W,H);
+  const px=Math.max(3,Math.round(W/100));
+  for(let i=0;i<90;i++){const x=Math.floor(Math.random()*W/px)*px,y=Math.floor(Math.random()*H*0.6/px)*px;
+    g.fillStyle='rgba(225,235,255,'+(0.25+Math.random()*0.6).toFixed(2)+')'; g.fillRect(x,y,px,px);
+    if(Math.random()<0.15){g.fillRect(x-px,y,px,px);g.fillRect(x+px,y,px,px);g.fillRect(x,y-px,px,px);g.fillRect(x,y+px,px,px);}}
+  const mx=Math.round(W*0.76),my=Math.round(H*0.12),R=5*px;     // pixel moon
+  for(let a=-R;a<=R;a+=px)for(let bb=-R;bb<=R;bb+=px){ if(a*a+bb*bb<=R*R){g.fillStyle='#f3e8bf';g.fillRect(mx+a,my+bb,px,px);} }
+  const horizon=Math.round(H*0.64); g.fillStyle='#1b2150'; let h=6;   // far mountains
+  for(let x=0;x<W;x+=px){ h+=Math.round((Math.random()-0.5)*2.4); h=Math.max(2,Math.min(18,h)); g.fillRect(x,horizon-h*px,px,H-(horizon-h*px)); }
+  g.fillStyle='#0f1430'; let h2=10;                              // near hills
+  for(let x=0;x<W;x+=px){ h2+=Math.round((Math.random()-0.5)*2.4); h2=Math.max(3,Math.min(12,h2)); const top=Math.round(H*0.76)-h2*px; g.fillRect(x,top,px,H-top); }
+}
+function resize(){const r=canvas.getBoundingClientRect();const w=Math.max(1,r.width),h=Math.max(1,r.height);renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();drawBgArt();}
 window.addEventListener('resize',resize);
 
 let last=performance.now();
