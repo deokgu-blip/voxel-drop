@@ -27,7 +27,7 @@
 <div id="hud"><div id="lv">LV 1</div><div id="cnt">0 left</div></div>
 <div id="msg"></div>
 <div id="bins"></div>
-<div id="hint">Tap a color → it goes into its bin · drag to rotate</div>
+<div id="hint">Press a voxel to preview what drops · release to collect · drag to rotate</div>
 <button id="restart">RESTART</button>
 <div id="clear">CLEARED!</div>
 <script>/**
@@ -3849,17 +3849,25 @@ function binBump(box){ if(!box.group)return; box.group.scale.setScalar(1.1); set
 function popBox(box){ for(const m of box.stack)box.group.remove(m); box.stack=[];box.count=0;box.inflight=0; binPopFx(box); refreshBins(); }
 function findBin(hex){ return findBox(hex); }
 
-// ===== input =====
-const ray=new THREE.Raycaster();
-let down=null,dragging=false;
+// ===== input (press = preview what falls, release = collect, drag = rotate) =====
+const ray=new THREE.Raycaster(); const _white=new THREE.Color(0xffe24d);  // warm glow highlight (pops on any colour)
+let down=null,dragging=false,previewV=null,previewPt=null,previewIdx=[];
 function ndc(ev){const r=canvas.getBoundingClientRect();return{x:((ev.clientX-r.left)/r.width)*2-1,y:-((ev.clientY-r.top)/r.height)*2+1};}
-canvas.addEventListener('pointerdown',ev=>{down={x:ev.clientX,y:ev.clientY};dragging=false;});
+function pickVox(ev){const p=ndc(ev);ray.setFromCamera(p,camera);const hit=attachedMesh?ray.intersectObject(attachedMesh,false):[];return hit.length?{v:attachedList[hit[0].instanceId],pt:hit[0].point.clone()}:null;}
+// pure simulation: which voxels would drop if v is removed (matches real reanchor behaviour, then restores)
+function wouldFallSet(v){ const savedCore=coreKey; v.alive=false; computeConnectivity();
+  const set=[v]; for(const x of voxels) if(x.alive&&!x.attached) set.push(x);
+  v.alive=true; coreKey=savedCore; computeConnectivity(); return set; }
+function showPreview(v){ clearPreview(); if(!attachedMesh)return;
+  for(const vv of wouldFallSet(v)){ const idx=attachedList.indexOf(vv); if(idx>=0){ _col.setHex(hexInt(vv.hex)).lerp(_white,0.55); attachedMesh.setColorAt(idx,_col); previewIdx.push({idx,hex:vv.hex}); } }
+  if(previewIdx.length&&attachedMesh.instanceColor)attachedMesh.instanceColor.needsUpdate=true; }
+function clearPreview(){ if(!previewIdx.length||!attachedMesh)return; for(const e of previewIdx) attachedMesh.setColorAt(e.idx,_col.setHex(hexInt(e.hex))); if(attachedMesh.instanceColor)attachedMesh.instanceColor.needsUpdate=true; previewIdx=[]; }
+canvas.addEventListener('pointerdown',ev=>{ down={x:ev.clientX,y:ev.clientY}; dragging=false; const h=pickVox(ev); if(h&&h.v){previewV=h.v;previewPt=h.pt;showPreview(h.v);} else previewV=null; });
 window.addEventListener('pointermove',ev=>{ if(!down)return; const dx=ev.clientX-down.x,dy=ev.clientY-down.y;
-  if(!dragging&&Math.hypot(dx,dy)>6)dragging=true;
+  if(!dragging&&Math.hypot(dx,dy)>6){dragging=true;clearPreview();previewV=null;}
   if(dragging){modelGroup.rotation.y+=dx*0.012;modelGroup.rotation.x=Math.max(-0.6,Math.min(0.6,modelGroup.rotation.x+dy*0.008));down.x=ev.clientX;down.y=ev.clientY;}});
 window.addEventListener('pointerup',ev=>{ if(!down)return; const moved=dragging; down=null; if(moved)return;
-  const p=ndc(ev); ray.setFromCamera(p,camera); const hit=attachedMesh?ray.intersectObject(attachedMesh,false):[];
-  if(hit.length){const v=attachedList[hit[0].instanceId]; if(v) collectOne(v, hit[0].point.clone());}});
+  if(previewV){const v=previewV,pt=previewPt;previewV=null;previewIdx=[];collectOne(v,pt);}});
 
 // ===== physics =====
 function step(dt){ if(!fallers.length){fallMesh.count=0;return;} dt=Math.min(dt,1/30);
